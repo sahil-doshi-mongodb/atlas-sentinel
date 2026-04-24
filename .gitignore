@@ -1,3 +1,8 @@
-node_modules
+node_modules/
 .env
-chaos/.connection-storm.*
+*.log
+.DS_Store
+
+# Chaos worker artifacts (PIDs and logs)
+chaos/.*.pid
+chaos/.*.log
