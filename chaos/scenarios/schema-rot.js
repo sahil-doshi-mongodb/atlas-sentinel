@@ -5,30 +5,42 @@ export async function trigger() {
     const db = client.db(process.env.MONGODB_DB);
     const coll = db.collection('orders');
 
-    console.log('💥 CHAOS: Bloating documents with massive arrays...');
+    console.log('💥 CHAOS: Bloating 50 documents with massive arrays...');
 
-    // Pick 100 docs and grow them with huge arrays
-    const targets = await coll.find({}).limit(100).project({ _id: 1 }).toArray();
+    // Smaller blast radius (50 docs) but still very visible in stats
+    const targets = await coll.find({}).limit(50).project({ _id: 1 }).toArray();
+    console.log(`   Target docs: ${targets.length}`);
 
-    for (const t of targets) {
-        const huge = Array.from({ length: 30_000 }, (_, i) => ({
-            event: `evt_${i}`,
-            payload: 'x'.repeat(100),
-        }));
-        await coll.updateOne({ _id: t._id }, { $set: { activity_history: huge } });
-    }
+    // Build the huge array once, reuse
+    const huge = Array.from({ length: 30_000 }, (_, i) => ({
+        event: `evt_${i}`,
+        payload: 'x'.repeat(100),
+    }));
 
-    console.log('✅ Bloated 100 docs with 30K-entry arrays');
-    return { triggered: 'schema_rot', applied_at: new Date() };
+    // Parallel bulkWrite — way faster
+    const ops = targets.map(t => ({
+        updateOne: {
+            filter: { _id: t._id },
+            update: { $set: { activity_history: huge } },
+        },
+    }));
+
+    console.log('   Writing bloat in parallel...');
+    const start = Date.now();
+    const result = await coll.bulkWrite(ops, { ordered: false });
+    const elapsed = Math.round((Date.now() - start) / 1000);
+
+    console.log(`✅ Bloated ${result.modifiedCount} docs with 30K-entry arrays in ${elapsed}s`);
+    return { triggered: 'schema_rot', applied_at: new Date(), affected: result.modifiedCount };
 }
 
 export async function reset() {
     const client = await getAppClient();
     const db = client.db(process.env.MONGODB_DB);
-    await db.collection('orders').updateMany(
+    const result = await db.collection('orders').updateMany(
         { activity_history: { $exists: true } },
         { $unset: { activity_history: '' } }
     );
-    console.log('✅ Reset: bloated arrays removed');
+    console.log(`✅ Reset: removed bloat from ${result.modifiedCount} docs`);
     return { reset: 'schema_rot' };
 }
