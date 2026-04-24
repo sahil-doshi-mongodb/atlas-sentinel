@@ -118,6 +118,14 @@ export const TOOLS = {
         },
         fn: partner.recommend_partner_solution,
     },
+    get_write_activity: {
+        description: 'Sample server opcounters over a few seconds to compute real-time inserts/updates/deletes per second. Use this to detect write storms when Atlas metrics lag or to investigate replication lag root cause.',
+        parameters: {
+            type: 'object',
+            properties: { sample_seconds: { type: 'number', default: 2 } },
+        },
+        fn: dp.get_write_activity,
+    },
 };
 
 export function toolSchema() {

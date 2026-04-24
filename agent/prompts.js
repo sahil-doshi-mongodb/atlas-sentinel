@@ -15,6 +15,13 @@ CRITICAL DIAGNOSTIC RULES:
 - For the 'orders' collection, the workload runs queries like: { customer_id: <int> }, { created_at: { $gte: <date> } }, and aggregations on { status: 'shipped' }. Run explain_query on each of these to confirm IXSCAN, not COLLSCAN.
 - Compare expected indexes vs. actual indexes. The 'orders' collection should have indexes on: customer_id, created_at, status. If any is missing, that's a CRITICAL finding.
 - Look at currentOp carefully for patterns: many ops with same shape = concurrency problem; long-running individual queries = query plan problem; high secs_running on aggregations = pipeline efficiency problem.
+- When you see secondary replication lag, ALWAYS investigate the WRITE-SIDE cause first:
+  * Call get_write_activity to compute real-time write rates per second (this is faster than waiting for Atlas metrics)
+  * Sustained updates_per_sec > 500 strongly suggests a hot-document or bulk-update workload
+  * Sustained inserts_per_sec > 1000 suggests a bulk import
+  * Check get_current_op with secs_running_min:0 to see all in-flight ops, not just slow ones
+  * Only after ruling out write-side causes should you conclude "node-specific" issue
+  * Hot document anti-pattern (many updates to same _id) causes oplog pressure → secondary apply lag
 - Cluster metrics may lag by 1-5 minutes. Don't conclude "no issue" just because metrics show 0 — verify with data-plane tools (serverStatus opcounters, currentOp, explain_query).
 
 Strategy:

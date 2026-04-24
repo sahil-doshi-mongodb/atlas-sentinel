@@ -31,15 +31,46 @@ export async function get_current_op({ active = true, secs_running_min = 1 } = {
         active,
         secs_running: { $gte: secs_running_min },
     });
+
+    // Bucket operations by namespace + op type to spot patterns
+    const buckets = {};
+    for (const op of result.inprog) {
+        const key = `${op.ns || 'admin'}|${op.op || 'unknown'}`;
+        if (!buckets[key]) {
+            buckets[key] = { ns: op.ns, op: op.op, count: 0, max_secs_running: 0, sample_commands: [] };
+        }
+        buckets[key].count++;
+        buckets[key].max_secs_running = Math.max(buckets[key].max_secs_running, op.secs_running || 0);
+        if (buckets[key].sample_commands.length < 3) {
+            buckets[key].sample_commands.push(JSON.stringify(op.command).slice(0, 300));
+        }
+    }
+
+    // Detect hot-doc pattern (many ops targeting same _id)
+    const hotDocs = {};
+    for (const op of result.inprog) {
+        const cmdStr = JSON.stringify(op.command || {});
+        const idMatch = cmdStr.match(/"_id":\s*\{?"?\$?oid"?:?\s*"?([a-f0-9]{24})"?/);
+        if (idMatch) {
+            const id = idMatch[1];
+            hotDocs[id] = (hotDocs[id] || 0) + 1;
+        }
+    }
+    const hotDocAlert = Object.entries(hotDocs)
+        .filter(([, count]) => count >= 3)
+        .map(([id, count]) => ({ doc_id: id, concurrent_ops: count }));
+
     return {
         in_progress_count: result.inprog.length,
-        operations: result.inprog.slice(0, 20).map(op => ({
+        operation_patterns: Object.values(buckets).sort((a, b) => b.count - a.count).slice(0, 10),
+        hot_doc_pattern: hotDocAlert.length > 0 ? hotDocAlert : null,
+        sample_operations: result.inprog.slice(0, 10).map(op => ({
             opid: op.opid,
             ns: op.ns,
             op: op.op,
             secs_running: op.secs_running,
             planSummary: op.planSummary,
-            command: JSON.stringify(op.command).slice(0, 200),
+            command: JSON.stringify(op.command).slice(0, 400),
         })),
     };
 }
@@ -158,4 +189,34 @@ export async function get_replication_status() {
     } catch (e) {
         return { error: e.message };
     }
+}
+
+export async function get_write_activity({ sample_seconds = 2 } = {}) {
+    const db = await getDb('agent');
+
+    const t1 = await db.admin().serverStatus();
+    await new Promise(r => setTimeout(r, sample_seconds * 1000));
+    const t2 = await db.admin().serverStatus();
+
+    const dt = sample_seconds;
+    const delta = (k) => Math.round((t2.opcounters[k] - t1.opcounters[k]) / dt);
+
+    const result = {
+        sample_seconds: dt,
+        inserts_per_sec: delta('insert'),
+        updates_per_sec: delta('update'),
+        deletes_per_sec: delta('delete'),
+        queries_per_sec: delta('query'),
+        getmores_per_sec: delta('getmore'),
+        commands_per_sec: delta('command'),
+    };
+
+    // Flag suspicious patterns
+    const flags = [];
+    if (result.updates_per_sec > 500) flags.push(`HIGH UPDATE RATE: ${result.updates_per_sec}/sec — possible hot document or bulk update storm`);
+    if (result.inserts_per_sec > 1000) flags.push(`HIGH INSERT RATE: ${result.inserts_per_sec}/sec — possible bulk import`);
+    if (result.deletes_per_sec > 500) flags.push(`HIGH DELETE RATE: ${result.deletes_per_sec}/sec`);
+    if (flags.length) result.alerts = flags;
+
+    return result;
 }
