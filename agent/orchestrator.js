@@ -81,7 +81,7 @@ async function synthesizeFinalReport(messages, lastResponse) {
         ...messages,
         {
             role: 'user',
-            content: 'Based on all your investigation above, produce a final diagnostic report in this exact JSON format (no markdown, no commentary, just JSON):\n{\n  "severity": "CRITICAL | HIGH | MEDIUM | LOW",\n  "root_cause": "one-sentence root cause",\n  "evidence": ["bullet 1", "bullet 2"],\n  "remediation_steps": [\n    { "action": "...", "code": "...", "estimated_impact": "..." }\n  ],\n  "partner_recommendation": "...",\n  "similar_past_incidents": ["INC-..."],\n  "confidence": 0.0-1.0\n}',
+            content: 'Based on all your investigation above, produce a final diagnostic report in this exact JSON format (no markdown, no commentary, just JSON):\n{\n  "severity": "CRITICAL | HIGH | MEDIUM | LOW",\n  "root_cause": "one-sentence root cause",\n  "evidence": ["bullet 1", "bullet 2"],\n  "remediation_steps": [\n    { "action": "...", "code": "...", "estimated_impact": "..." }\n  ],\n  "partner_recommendation": "...",\n  "similar_past_incidents": ["INC-..."],\n  "confidence": 0.0-1.0\n}\n\nFor similar_past_incidents: ONLY include incidents whose ROOT CAUSE matches your diagnosis. Do not include tangentially related incidents. Better to return [] than a weak match.',
         },
     ];
 

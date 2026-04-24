@@ -7,7 +7,8 @@ export async function getAgentClient() {
   if (!agentClient) {
     agentClient = new MongoClient(process.env.MONGODB_URI, {
       maxPoolSize: 10,
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 15000,
+      socketTimeoutMS: 30000,
     });
     await agentClient.connect();
     console.log('✅ Agent (read-only) client connected');

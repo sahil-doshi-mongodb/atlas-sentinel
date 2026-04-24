@@ -1,5 +1,11 @@
 import { getDb } from '../config/mongo.js';
 
+// Helper: strip "db." prefix if agent passes "sentinel_db.orders"
+function normalizeCollName(name) {
+    if (!name) return name;
+    return name.includes('.') ? name.split('.').slice(-1)[0] : name;
+}
+
 export async function get_server_status() {
     const db = await getDb('agent');
     const status = await db.admin().serverStatus();
@@ -39,6 +45,7 @@ export async function get_current_op({ active = true, secs_running_min = 1 } = {
 }
 
 export async function get_index_stats({ collection }) {
+    collection = normalizeCollName(collection);
     const db = await getDb('agent');
     const stats = await db.collection(collection).aggregate([
         { $indexStats: {} }
@@ -51,6 +58,7 @@ export async function get_index_stats({ collection }) {
 }
 
 export async function get_coll_stats({ collection }) {
+    collection = normalizeCollName(collection);
     const db = await getDb('agent');
     const [stats] = await db.collection(collection).aggregate([
         { $collStats: { storageStats: { scale: 1024 * 1024 } } }
@@ -69,17 +77,44 @@ export async function get_coll_stats({ collection }) {
     };
 }
 
+function findMeaningfulStage(plan) {
+    // Walk down to find IXSCAN, COLLSCAN, FETCH, etc — skip LIMIT/PROJECTION/SKIP wrappers
+    const skipStages = new Set(['LIMIT', 'PROJECTION_DEFAULT', 'PROJECTION_COVERED', 'PROJECTION_SIMPLE', 'SKIP', 'SHARD_MERGE_SORT']);
+    let cur = plan;
+    while (cur && skipStages.has(cur.stage) && cur.inputStage) {
+        cur = cur.inputStage;
+    }
+    return cur;
+}
+
 export async function explain_query({ collection, filter, sort, limit = 10 }) {
+    collection = normalizeCollName(collection);
     const db = await getDb('agent');
     const cursor = db.collection(collection).find(filter || {});
     if (sort) cursor.sort(sort);
     cursor.limit(limit);
     const explanation = await cursor.explain('executionStats');
     const exec = explanation.executionStats;
+    const meaningful = findMeaningfulStage(explanation.queryPlanner.winningPlan);
+
+    // Find IXSCAN deep in the plan if it exists
+    function findStage(p, stageName) {
+        if (!p) return null;
+        if (p.stage === stageName) return p;
+        if (p.inputStage) return findStage(p.inputStage, stageName);
+        if (p.inputStages) for (const s of p.inputStages) { const r = findStage(s, stageName); if (r) return r; }
+        return null;
+    }
+    const ixscan = findStage(explanation.queryPlanner.winningPlan, 'IXSCAN');
+    const collscan = findStage(explanation.queryPlanner.winningPlan, 'COLLSCAN');
+
     return {
-        winningPlan: explanation.queryPlanner.winningPlan.stage,
-        indexUsed: explanation.queryPlanner.winningPlan.inputStage?.indexName || 'COLLSCAN',
+        top_stage: explanation.queryPlanner.winningPlan.stage,
+        meaningful_stage: meaningful?.stage,
+        indexUsed: ixscan?.indexName || (collscan ? 'COLLSCAN' : 'unknown'),
+        indexKey: ixscan?.keyPattern || null,
         docs_examined: exec.totalDocsExamined,
+        keys_examined: exec.totalKeysExamined,
         docs_returned: exec.nReturned,
         examined_to_returned_ratio: exec.nReturned ? Math.round(exec.totalDocsExamined / exec.nReturned) : null,
         execution_ms: exec.executionTimeMillis,
@@ -88,6 +123,7 @@ export async function explain_query({ collection, filter, sort, limit = 10 }) {
 }
 
 export async function sample_schema({ collection, n = 5 }) {
+    collection = normalizeCollName(collection);
     const db = await getDb('agent');
     const docs = await db.collection(collection).aggregate([
         { $sample: { size: n } }
