@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🛡️ Atlas Health Sentinel</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+
+<body>
+
+    <header>
+        <div class="brand">
+            <span class="logo">🛡️</span>
+            <div>
+                <h1>Atlas Health Sentinel</h1>
+                <div class="subtitle">Agentic MongoDB Diagnostics · Powered by Grove + Voyage AI</div>
+            </div>
+        </div>
+        <div class="cluster-info">
+            <div class="cluster-name">sentinel-cluster · M10 · ap-south-1</div>
+            <div id="health-badge" class="badge healthy">HEALTHY</div>
+        </div>
+    </header>
+
+    <section id="dashboard">
+        <div class="metric-card">
+            <label>Connections</label>
+            <div id="m-connections" class="value">—</div>
+            <div id="m-connections-detail" class="detail">—</div>
+        </div>
+        <div class="metric-card">
+            <label>Cache Utilization</label>
+            <div id="m-cache" class="value">—</div>
+            <div id="m-cache-detail" class="detail">—</div>
+        </div>
+        <div class="metric-card">
+            <label>Total Ops Lifetime</label>
+            <div id="m-ops" class="value">—</div>
+            <div id="m-ops-detail" class="detail">—</div>
+        </div>
+        <div class="metric-card">
+            <label>Uptime</label>
+            <div id="m-uptime" class="value">—</div>
+            <div id="m-uptime-detail" class="detail">—</div>
+        </div>
+    </section>
+
+    <section id="chaos-section">
+        <h2>🎲 Chaos Buffet</h2>
+        <p class="hint">Pick a scenario to inject — Sentinel will diagnose the resulting cluster issue.</p>
+        <div class="chaos-grid">
+            <button class="chaos-btn" data-scenario="collscan_avalanche">
+                <span class="chaos-icon">🔍</span>
+                <span class="chaos-name">COLLSCAN Avalanche</span>
+                <span class="chaos-desc">Drop a critical index — full collection scans erupt</span>
+            </button>
+            <button class="chaos-btn" data-scenario="connection_storm">
+                <span class="chaos-icon">🌪️</span>
+                <span class="chaos-name">Connection Storm</span>
+                <span class="chaos-desc">60 concurrent unbounded aggregations</span>
+            </button>
+            <button class="chaos-btn" data-scenario="schema_rot">
+                <span class="chaos-icon">📦</span>
+                <span class="chaos-name">Schema Rot</span>
+                <span class="chaos-desc">Unbounded array growth on docs (100×30K)</span>
+            </button>
+            <button class="chaos-btn" data-scenario="replication_lag">
+                <span class="chaos-icon">⏱️</span>
+                <span class="chaos-name">Replication Lag</span>
+                <span class="chaos-desc">Hot-document anti-pattern</span>
+            </button>
+            <button class="chaos-btn" data-scenario="working_set_breach">
+                <span class="chaos-icon">💥</span>
+                <span class="chaos-name">Working Set Breach</span>
+                <span class="chaos-desc">Vector index inflates working set beyond RAM</span>
+            </button>
+        </div>
+        <div class="reset-row">
+            <button id="reset-all-btn" class="danger">🧹 Reset All Chaos</button>
+            <span id="chaos-status" class="status-text"></span>
+        </div>
+    </section>
+
+    <section id="diagnose-section">
+        <button id="diagnose-btn" class="primary big">🔍 Diagnose Cluster</button>
+        <span id="diag-timer" class="timer"></span>
+    </section>
+
+    <section id="agent-section">
+        <h2>🧠 Agent Reasoning</h2>
+        <div id="trace" class="trace-box">
+            <div class="trace-empty">Click "Diagnose Cluster" to start. Watch Sentinel reason through diagnostics in
+                real time.</div>
+        </div>
+    </section>
+
+    <section id="report-section" class="hidden">
+        <h2>📋 Diagnostic Report</h2>
+        <div id="report-body"></div>
+    </section>
+
+    <script src="/dashboard.js"></script>
+    <script src="/chaos-buffet.js"></script>
+    <script src="/agent-panel.js"></script>
+</body>
+
+</html>

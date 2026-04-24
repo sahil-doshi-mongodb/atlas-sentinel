@@ -13,13 +13,17 @@ export async function diagnose({ userQuery, emit }) {
 
     for (let step = 1; step <= MAX_STEPS; step++) {
         emit({ type: 'step_start', step });
+        emit({ type: 'model_thinking', step, model: 'haiku-4.5' });
 
+        const llmStart = Date.now();
         const response = await callBedrock({
             system: SYSTEM_PROMPT,
             messages,
             tools: toolSchema(),
             model: 'fast',
         });
+        const llmMs = Date.now() - llmStart;
+        emit({ type: 'model_done', step, model: 'haiku-4.5', latency_ms: llmMs, input_tokens: response.usage?.input_tokens, output_tokens: response.usage?.output_tokens });
 
         for (const block of response.content) {
             if (block.type === 'text' && block.text) {
@@ -51,6 +55,7 @@ export async function diagnose({ userQuery, emit }) {
                     step,
                     tool: use.name,
                     result_summary: summarize(result),
+                    result_full: JSON.stringify(result, null, 2).slice(0, 4000),
                 });
 
                 return {

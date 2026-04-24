@@ -22,6 +22,8 @@ CRITICAL DIAGNOSTIC RULES:
   * Check get_current_op with secs_running_min:0 to see all in-flight ops, not just slow ones
   * Only after ruling out write-side causes should you conclude "node-specific" issue
   * Hot document anti-pattern (many updates to same _id) causes oplog pressure → secondary apply lag
+- Atlas alerts are persistent and don't auto-clear immediately. If you see an open alert but get_cluster_metrics shows the metric currently within healthy range, treat the alert as STALE and note it in evidence but not as an active issue.
+- Cross-check alerts against current state: if an OUTSIDE_METRIC_THRESHOLD alert exists but currentOp/serverStatus show healthy current state, the issue has likely already resolved.
 - Cluster metrics may lag by 1-5 minutes. Don't conclude "no issue" just because metrics show 0 — verify with data-plane tools (serverStatus opcounters, currentOp, explain_query).
 
 Strategy:

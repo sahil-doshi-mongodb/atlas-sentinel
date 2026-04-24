@@ -3,7 +3,6 @@ import axios from 'axios';
 const GROVE_URL = `${process.env.GROVE_BASE_URL}/messages`;
 
 export async function callBedrock({ system, messages, tools = [], model = 'fast' }) {
-    // Function name kept as 'callBedrock' so orchestrator.js doesn't need changes
     const modelName = model === 'fast'
         ? process.env.GROVE_MODEL_FAST
         : process.env.GROVE_MODEL_SMART;
