@@ -1,0 +1,402 @@
+[
+    {
+        "incident_id": "INC-2025-0042",
+        "title": "Vector index growth caused working-set breach on M30",
+        "symptoms": "p99 latency spiked from 40ms to 800ms over 2 hours, page faults rising sharply, WiredTiger cache pressure at 95%, recently created a 1024-dimension vector search index on a 10M document collection, eviction storm in cache stats",
+        "diagnosis": "A new vector search index on the orders collection (10M docs, voyage-3-large embeddings at 1024 dims) added ~40GB of index data. The cluster M30 has only 8GB RAM, pushing the working set far beyond cache. Hot operational data no longer fits, causing disk I/O on virtually every query.",
+        "remediation": "Apply scalar quantization (8-bit) to the vector index, which reduces index size by ~4x with less than 2% accuracy loss. If quantization alone is insufficient, upsize to M40 or introduce dedicated Search Nodes for workload isolation.",
+        "remediation_code": "db.runCommand({ updateSearchIndex: 'orders_vector_index', definition: { fields: [{ type: 'vector', path: 'embedding', numDimensions: 1024, similarity: 'cosine', quantization: 'scalar' }] } })",
+        "partner_recommendation": "PeerIslands offers a managed vector tuning service for production AI workloads. AWS MAP (Migration Acceleration Program) funding can offset M40 upgrade costs; loop in the AWS Partner SA team for joint co-sell.",
+        "tags": [
+            "vector-search",
+            "memory",
+            "working-set",
+            "tier-sizing",
+            "quantization",
+            "aws"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0061",
+        "title": "Dropped index caused COLLSCAN avalanche on customer collection",
+        "symptoms": "Sudden CPU spike to 92%, ops/sec dropped from 4000 to 600, slow queries on a single collection, examined-to-returned ratio exploded from 5:1 to 50000:1, no recent code deployments",
+        "diagnosis": "A previously-relied-upon index ({customer_id: 1}) was dropped during a 'cleanup of unused indexes' based on Performance Advisor recommendations. The index was used by a low-frequency but high-volume nightly batch job, so it appeared unused during business hours. Application queries now full-collection scan.",
+        "remediation": "Recreate the dropped index immediately with background:true. Audit the index lifecycle process: Performance Advisor 'unused' suggestions need workload-aware review across the full operational cycle (24h minimum, ideally 7 days for weekly batch patterns).",
+        "remediation_code": "db.orders.createIndex({ customer_id: 1 }, { background: true, name: 'customer_id_1_restored' })",
+        "partner_recommendation": "Capgemini's Atlas managed service includes formal index lifecycle governance to prevent this class of issue. For high-stakes index changes, route to MongoDB Professional Services Performance Specialist team first.",
+        "tags": [
+            "indexing",
+            "collscan",
+            "performance-advisor",
+            "operations",
+            "si-partner"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0078",
+        "title": "Hot document caused secondary replication lag",
+        "symptoms": "Secondary replication lag growing from 0s to 45s over 30 minutes, oplog window shrinking, primary writes healthy at 2000 ops/sec, one document being updated 5000+ times per minute, oplog filling with $inc and $push operations on the same _id",
+        "diagnosis": "A counter document in the analytics collection is being updated by every API request to track active sessions. The single-document write pattern serializes on the primary (no contention) but secondaries replay the same document update repeatedly, causing apply lag. This is the classic 'hot document' anti-pattern.",
+        "remediation": "Replace the single-counter pattern with a sharded counter approach: insert lightweight event documents and aggregate periodically, OR use multiple counter shards with random distribution and sum on read. For session tracking specifically, consider Atlas Stream Processing with a time-windowed aggregation.",
+        "remediation_code": "// Instead of: db.counters.updateOne({_id: 'sessions'}, {$inc: {count: 1}})\n// Use sharded counters:\nconst shard = Math.floor(Math.random() * 100);\ndb.counters.updateOne({_id: `sessions_${shard}`}, {$inc: {count: 1}}, {upsert: true});\n// Read: db.counters.aggregate([{$match: {_id: /^sessions_/}}, {$group: {_id: null, total: {$sum: '$count'}}}])",
+        "partner_recommendation": "MongoDB Professional Services schema design workshop. For high-throughput analytics, evaluate Atlas Stream Processing — co-sell with AWS Kinesis or Confluent Cloud as upstream sources.",
+        "tags": [
+            "replication-lag",
+            "schema-design",
+            "hot-document",
+            "anti-pattern",
+            "stream-processing"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0094",
+        "title": "Connection pool exhaustion from long-running aggregations",
+        "symptoms": "Application errors: 'connection pool cleared', 5xx rate climbing, currentOp shows 200+ aggregations all running 30+ seconds, connections at maxPoolSize, no slow query alerts (queries are 'normal' duration but plentiful)",
+        "diagnosis": "A new dashboard endpoint runs unbounded aggregations on the analytics collection without pagination or timeout. Each request holds a connection for 30-60s; concurrent dashboard refreshes by analysts saturate the pool. This is not a slow-query problem — it's a concurrency-and-resource problem.",
+        "remediation": "Add maxTimeMS to all aggregation pipelines. Implement query result caching at the application layer (Redis or in-memory) for dashboard data. Increase the connection pool size as a stopgap, but the root fix is bounded queries plus caching.",
+        "remediation_code": "// Add maxTimeMS and limits:\ndb.analytics.aggregate(pipeline, { maxTimeMS: 5000 });\n\n// In Node.js driver:\nclient.db().collection('analytics').aggregate(pipeline, { maxTimeMS: 5000 }).toArray();\n\n// Cache results at app layer with 60s TTL for dashboard data.",
+        "partner_recommendation": "AWS ElastiCache (Redis) for dashboard caching layer; co-sell motion with AWS as part of an Atlas + ElastiCache reference architecture. For deeper concurrency tuning, route to MongoDB Performance Specialist team.",
+        "tags": [
+            "connections",
+            "aggregation",
+            "concurrency",
+            "caching",
+            "aws"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0103",
+        "title": "Unbounded array growth caused 16MB document limit errors",
+        "symptoms": "Application errors: 'Resulting document after update is larger than 16777216', failures concentrated on a small number of 'hot' user accounts, document size warnings in logs, the activity_log array on user documents has grown to 80,000+ entries over 18 months",
+        "diagnosis": "The user collection embeds an activity_log array directly in each document. Power users have accumulated tens of thousands of entries, approaching the 16MB BSON document limit. This is the 'massive array' anti-pattern — embedded arrays should never grow without bound.",
+        "remediation": "Migrate to the bucket pattern: store activity entries in a separate collection bucketed by time period (e.g., one bucket per user per month). Keep only a 'recent activity' summary on the user document. Use MongoDB Time Series collections if the access pattern is time-based.",
+        "remediation_code": "// New schema: activity_buckets collection\n{\n  _id: ObjectId(),\n  user_id: ObjectId(...),\n  bucket_start: ISODate('2025-01-01'),\n  bucket_end: ISODate('2025-02-01'),\n  count: 1247,\n  events: [/* up to ~1000 entries per bucket */]\n}\n\n// Index: { user_id: 1, bucket_start: -1 }\n// Migration: aggregate $bucket-style transformation, then $unset activity_log on users",
+        "partner_recommendation": "MongoDB Professional Services Modernization Factory for the data migration. Cognizant or Infosys for application-layer changes if the codebase is large.",
+        "tags": [
+            "schema-design",
+            "anti-pattern",
+            "bucket-pattern",
+            "document-limit",
+            "modernization"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0118",
+        "title": "Wrong compound index order violated ESR rule",
+        "symptoms": "Query examined 500K docs to return 100, slow query logs show high docsExamined-to-nReturned ratio, explain shows IXSCAN but with FETCH stage scanning many docs, the query has equality on status, range on created_at, and sort by amount",
+        "diagnosis": "The index is { created_at: 1, status: 1, amount: 1 } but the query pattern is { status: 'pending', created_at: { $gte: ... } }, sort: { amount: -1 }. This violates the ESR rule (Equality, Sort, Range): equality fields should be first, then sort fields, then range fields. The current order forces a wide range scan before filtering.",
+        "remediation": "Drop the existing index and create one following ESR: { status: 1, amount: -1, created_at: 1 }. This allows the equality on status to narrow first, the sort on amount to be served by the index, and the range on created_at to filter the smaller result set.",
+        "remediation_code": "db.orders.dropIndex({ created_at: 1, status: 1, amount: 1 });\ndb.orders.createIndex({ status: 1, amount: -1, created_at: 1 }, { background: true, name: 'esr_optimized' });\n// Verify with: db.orders.find(query).sort({amount: -1}).explain('executionStats')",
+        "partner_recommendation": "MongoDB University M201 (Performance) certification for the customer's DBA team. PeerIslands offers index optimization audits as a packaged service.",
+        "tags": [
+            "indexing",
+            "esr-rule",
+            "compound-index",
+            "query-optimization",
+            "training"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0127",
+        "title": "Regex without anchored prefix caused full index scan",
+        "symptoms": "Search-by-name queries running 5-10 seconds, explain shows IXSCAN but with totalKeysExamined equal to total index size, regex pattern uses /smith/i (case-insensitive, no prefix anchor)",
+        "diagnosis": "Case-insensitive regex without a prefix anchor (^) cannot use the index efficiently — it must scan the entire index. The 'i' flag also forces case-insensitive comparison on every key. This is effectively a COLLSCAN of the index.",
+        "remediation": "Two options. Short term: add a normalized lowercase field with an index, query with anchored prefix ({ name_lower: { $regex: /^smith/ } }). Long term: implement Atlas Search for full-text search with proper analyzers — this is what it's built for.",
+        "remediation_code": "// Short term:\ndb.users.updateMany({}, [{ $set: { name_lower: { $toLower: '$name' } } }]);\ndb.users.createIndex({ name_lower: 1 });\n// Query: db.users.find({ name_lower: { $regex: /^smith/ } })\n\n// Long term: Atlas Search\ndb.users.createSearchIndex({\n  name: 'user_search',\n  definition: { mappings: { dynamic: false, fields: { name: { type: 'string', analyzer: 'lucene.standard' } } } }\n});\n// Query: db.users.aggregate([{ $search: { index: 'user_search', text: { query: 'smith', path: 'name' } } }])",
+        "partner_recommendation": "Atlas Search adoption story — strong co-sell with the customer's existing Elasticsearch spend. MongoDB Search Specialist team can run a side-by-side benchmark vs. ES.",
+        "tags": [
+            "regex",
+            "indexing",
+            "atlas-search",
+            "full-text-search",
+            "competitive"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0134",
+        "title": "Oplog window shrunk to 90 seconds during bulk import",
+        "symptoms": "Replication oplog window dropped from 24h to 90 seconds, secondary at risk of falling out of sync and requiring full resync, bulk import job loading 500M documents into a new collection, primary writes are healthy",
+        "diagnosis": "A bulk data import is generating oplog entries faster than the oplog can retain history. The oplog is a fixed-size capped collection — at the current write rate, it cycles every 90 seconds. If a secondary lags by more than the oplog window, it cannot catch up and requires a full initial sync.",
+        "remediation": "Pause or throttle the bulk import. Increase the oplog size temporarily for large imports. For future bulk loads, use the bulk write API with {ordered: false} and chunked batching with brief pauses. Consider mongoimport with --numInsertionWorkers tuned to cluster capacity.",
+        "remediation_code": "// Increase oplog (Atlas: scale storage tier or contact support)\n// For self-managed: db.adminCommand({ replSetResizeOplog: 1, size: 50000 }) // 50GB\n\n// Throttled bulk import in Node.js:\nfor (const batch of chunked(docs, 1000)) {\n  await coll.bulkWrite(batch.map(d => ({ insertOne: { document: d } })), { ordered: false });\n  await sleep(50); // throttle\n}",
+        "partner_recommendation": "MongoDB Professional Services for production migration planning. AWS DMS or MongoDB Relational Migrator for structured migrations from RDBMS sources.",
+        "tags": [
+            "replication",
+            "oplog",
+            "bulk-load",
+            "migration",
+            "professional-services"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0149",
+        "title": "Election storm from network partition during maintenance",
+        "symptoms": "Frequent primary elections (5 in 10 minutes), application connection errors during each election, secondary stepping up and stepping down, replica set status shows oscillating PRIMARY/SECONDARY states",
+        "diagnosis": "A maintenance window introduced intermittent network latency between availability zones. The replica set heartbeat timeout (10s default) is being breached intermittently, triggering elections. Each election causes a brief unavailability window for writes.",
+        "remediation": "Investigate the underlying network issue (cloud provider AZ health, VPC peering, security group changes). Tune electionTimeoutMillis and heartbeatTimeoutSecs if the network instability is unavoidable. Ensure clients are using retryable writes (default in modern drivers).",
+        "remediation_code": "// Verify retryable writes enabled on connection string:\n// mongodb+srv://...?retryWrites=true&w=majority\n\n// For self-managed clusters, tune election timeouts (use cautiously):\nrs.reconfig({ ...rs.conf(), settings: { electionTimeoutMillis: 15000, heartbeatTimeoutSecs: 15 } });",
+        "partner_recommendation": "AWS Networking Specialist team for VPC/AZ diagnostics. For multi-cloud or cross-region resilience, position Atlas's multi-region replica sets — strong co-sell story across all three hyperscalers.",
+        "tags": [
+            "replication",
+            "elections",
+            "network",
+            "high-availability",
+            "multi-cloud"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0156",
+        "title": "Jumbo chunk preventing balancer from rebalancing",
+        "symptoms": "Sharded cluster imbalance: one shard at 80% storage, others at 30%, balancer logs show 'chunk too big to move', chunk size exceeds the configured chunkSize (default 128MB), shard key has low cardinality on the affected range",
+        "diagnosis": "A chunk has grown beyond the chunkSize threshold and cannot be split because the shard key has insufficient cardinality in that range. The balancer cannot move it, so data continues accumulating on the same shard. This points to a shard key design problem, not just an operational issue.",
+        "remediation": "Refine the shard key with refineCollectionShardKey to add a higher-cardinality field (e.g., suffix with timestamp or hash). For Atlas-hosted clusters, this is an online operation. If the shard key fundamentally cannot support the workload, plan a migration to a new collection with a better key.",
+        "remediation_code": "// Add a suffix to the shard key for better cardinality:\ndb.adminCommand({\n  refineCollectionShardKey: 'mydb.events',\n  key: { tenant_id: 1, created_at: 1 }  // was just { tenant_id: 1 }\n});\n\n// For severe cases, consider hashed sharding:\n// sh.shardCollection('mydb.events', { tenant_id: 'hashed' })",
+        "partner_recommendation": "MongoDB Professional Services for sharding strategy redesign. For multi-tenant SaaS use cases, route to the Multi-Tenant Architecture specialist team.",
+        "tags": [
+            "sharding",
+            "jumbo-chunk",
+            "shard-key",
+            "cardinality",
+            "professional-services"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0167",
+        "title": "Redundant indexes consuming 40% of cache",
+        "symptoms": "WiredTiger cache pressure consistently above 85%, 18 indexes on a single collection, $indexStats shows 6 indexes with zero accesses in 30 days, total index size 12GB on an 8GB cache",
+        "diagnosis": "Index sprawl from years of incremental development. Multiple indexes have overlapping prefixes and serve the same or subset queries. Unused indexes still consume RAM and incur write overhead. Cache thrashes between operational data and unused index pages.",
+        "remediation": "Audit indexes with $indexStats over a 7-day window to confirm zero usage. Drop unused indexes one at a time with hidden:true first (gives a safe rollback path). Consolidate redundant indexes into compound indexes that serve multiple query patterns following ESR rule.",
+        "remediation_code": "// Step 1: Audit\ndb.orders.aggregate([{ $indexStats: {} }, { $project: { name: 1, ops: '$accesses.ops', since: '$accesses.since' } }]);\n\n// Step 2: Hide before drop (safe rollback)\ndb.orders.hideIndex('rarely_used_idx_1');\n// Wait 24-48 hours, monitor\n\n// Step 3: Drop if confirmed\ndb.orders.dropIndex('rarely_used_idx_1');",
+        "partner_recommendation": "PeerIslands Atlas Optimization Service includes a quarterly index audit deliverable. MongoDB Performance Specialist team for high-stakes consolidation.",
+        "tags": [
+            "indexing",
+            "cache-pressure",
+            "index-audit",
+            "operations",
+            "si-partner"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0182",
+        "title": "Polymorphic schema chaos broke aggregation pipelines",
+        "symptoms": "Aggregation errors: 'cannot apply $size to non-array', queries return inconsistent shapes, the products collection contains documents with wildly different field types (price as string in some, number in others, array in a few)",
+        "diagnosis": "Years of schema evolution without a defined contract or migration discipline. The same logical field has multiple representations, breaking type-dependent operations. This is the 'bag of every type' anti-pattern — flexibility taken too far.",
+        "remediation": "Implement schema validation on the collection going forward (prevents new bad data). Run a one-time normalization migration to coerce existing data to a single shape per field. Long-term, adopt MongoDB schema design patterns and document the schema contract in the repo.",
+        "remediation_code": "// Add schema validation:\ndb.runCommand({\n  collMod: 'products',\n  validator: {\n    $jsonSchema: {\n      bsonType: 'object',\n      required: ['name', 'price'],\n      properties: {\n        name: { bsonType: 'string' },\n        price: { bsonType: 'double', minimum: 0 }\n      }\n    }\n  },\n  validationLevel: 'moderate'  // 'strict' for new only, 'moderate' for existing\n});\n\n// Normalize existing data:\ndb.products.find({ price: { $type: 'string' } }).forEach(doc => {\n  db.products.updateOne({ _id: doc._id }, { $set: { price: parseFloat(doc.price) } });\n});",
+        "partner_recommendation": "MongoDB Professional Services schema design engagement. For large-scale data normalization, Capgemini or Infosys can staff the migration team.",
+        "tags": [
+            "schema-design",
+            "validation",
+            "data-quality",
+            "anti-pattern",
+            "professional-services"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0193",
+        "title": "$or query without compound indexes did N collection scans",
+        "symptoms": "Search queries running 8-15 seconds, explain shows OR stage with multiple IXSCAN children, but each child has poor selectivity, query searches across 4 different fields with $or",
+        "diagnosis": "A $or query requires an index on each clause to be efficient — otherwise MongoDB must do multiple index scans (or worse, fall back to a collection scan). The current indexes are single-field and have poor selectivity for the actual query patterns. The $or is also using fields with high cardinality but no compound coverage.",
+        "remediation": "Either add appropriate indexes for each $or branch (one compound index per logical search path), or restructure the query to use Atlas Search if the use case is genuinely 'find anything matching across multiple fields' — that's text search, not OLTP.",
+        "remediation_code": "// Pattern 1: Index each $or branch (if branches are predictable)\ndb.users.createIndex({ email: 1 });\ndb.users.createIndex({ phone: 1 });\ndb.users.createIndex({ alt_email: 1 });\n\n// Pattern 2: Atlas Search for true multi-field search\ndb.users.createSearchIndex({\n  name: 'user_lookup',\n  definition: { mappings: { dynamic: false, fields: {\n    email: { type: 'string' }, phone: { type: 'string' }, alt_email: { type: 'string' }\n  }}}\n});\n// Then: $search with compound query across all fields",
+        "partner_recommendation": "Atlas Search adoption opportunity. Joint pitch with Atlas Search Specialist team. Strong displacement story vs. Elasticsearch.",
+        "tags": [
+            "indexing",
+            "or-query",
+            "atlas-search",
+            "competitive",
+            "search"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0204",
+        "title": "Vector search numCandidates too high caused latency spike",
+        "symptoms": "Vector search query latency jumped from 50ms to 600ms, no schema or index changes, recent application change increased numCandidates from 100 to 5000 'for better recall'",
+        "diagnosis": "numCandidates controls how many candidates the HNSW algorithm considers before returning the top k results. Increasing it improves recall but linearly increases latency and CPU. The application team raised it 50x without measuring the recall improvement, causing dramatic latency regression.",
+        "remediation": "Benchmark recall vs. latency at numCandidates of 100, 200, 500, 1000. Most workloads see diminishing recall returns past 10-20x the limit value. Set numCandidates to the smallest value that meets the recall SLO. Consider hybrid search ($rankFusion) if recall is genuinely insufficient.",
+        "remediation_code": "// Tune numCandidates — typical sweet spot is 10-20x limit:\ndb.docs.aggregate([{\n  $vectorSearch: {\n    index: 'docs_vector',\n    path: 'embedding',\n    queryVector: emb,\n    numCandidates: 200,  // was 5000\n    limit: 10\n  }\n}]);\n\n// For better recall without latency cost, try hybrid search:\n// $rankFusion combining $vectorSearch and $search lexical results",
+        "partner_recommendation": "MongoDB AI Solutions Architect team. Voyage AI offers embedding model fine-tuning for higher domain accuracy at the same numCandidates level.",
+        "tags": [
+            "vector-search",
+            "performance",
+            "tuning",
+            "hybrid-search",
+            "voyage-ai"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0215",
+        "title": "Background index build blocked critical writes",
+        "symptoms": "Application writes timing out during planned maintenance window, currentOp shows long-running createIndex command, write queue building up, secondaries also affected",
+        "diagnosis": "A new index is being built on a 200M document collection. Even with default behavior (replicated index builds in MongoDB 4.4+), the build consumes significant I/O and CPU. On undersized clusters, this can degrade concurrent write performance.",
+        "remediation": "For massive collections, build indexes during low-traffic periods and consider rolling index builds: temporarily drop a secondary out of the replica set, build the index, re-add it. Atlas can do this automatically with rolling index builds. Alternatively, scale the cluster temporarily for the build duration.",
+        "remediation_code": "// Atlas: use the UI 'Rolling Index Build' option — automated rolling pattern\n// Self-managed rolling pattern:\n// 1. Stop secondary, build index in standalone mode, restart\n// 2. Repeat for each secondary\n// 3. Step down primary, repeat\n\n// In code, prefer createIndexes (plural) for batched index creation:\ndb.runCommand({\n  createIndexes: 'orders',\n  indexes: [\n    { key: { customer_id: 1, status: 1 }, name: 'cust_status' },\n    { key: { created_at: -1 }, name: 'created_desc' }\n  ]\n});",
+        "partner_recommendation": "MongoDB Professional Services for production index build planning. For Atlas-hosted clusters, the Atlas support team can advise on rolling builds.",
+        "tags": [
+            "indexing",
+            "operations",
+            "maintenance",
+            "rolling-builds",
+            "professional-services"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0227",
+        "title": "Cursor leak from unclosed iteration in application code",
+        "symptoms": "currentOp shows growing number of idle cursors, cursor count climbing over hours, eventually hits cursor limit and queries fail, application uses async iterators but exits early on errors without closing cursors",
+        "diagnosis": "Application code iterates cursors but doesn't always close them on error paths. Each unclosed cursor holds resources on the server until the cursor timeout (10 min default). Under load, leaked cursors accumulate faster than they expire.",
+        "remediation": "Wrap cursor iterations in try/finally blocks that explicitly close cursors. Use the driver's helper methods (toArray, forEach) which handle cursor lifecycle. Reduce cursorTimeoutMs as a defensive measure to recover from leaks faster.",
+        "remediation_code": "// Bad: leaks on error\nconst cursor = coll.find(query);\nfor await (const doc of cursor) {\n  if (something) throw new Error('boom'); // cursor leaks\n}\n\n// Good: explicit cleanup\nconst cursor = coll.find(query);\ntry {\n  for await (const doc of cursor) {\n    /* ... */\n  }\n} finally {\n  await cursor.close();\n}\n\n// Better: use toArray or forEach when possible\nconst docs = await coll.find(query).limit(1000).toArray();",
+        "partner_recommendation": "MongoDB Developer Advocacy team for app-side training. For complex Node.js/Python codebases, route to Cognizant or TCS for application audits.",
+        "tags": [
+            "cursors",
+            "application-code",
+            "resource-leak",
+            "drivers",
+            "training"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0238",
+        "title": "Sort without index caused in-memory sort blocking",
+        "symptoms": "Query errors: 'Sort exceeded memory limit of 33554432 bytes' (32MB), aggregation queries failing for some users but not others, sort is on a calculated field after $project stage",
+        "diagnosis": "MongoDB enforces a 32MB limit on in-memory sorts to prevent runaway queries. Sorts that can be served by an index don't count against this limit, but sorts on computed fields (post-$project) cannot use an index. Large user accounts hit the limit; small ones don't.",
+        "remediation": "Three options: (1) Pre-compute the sort field at write time and index it; (2) Add { allowDiskUse: true } to the aggregation (slower but unblocks the query); (3) Restructure the pipeline to filter before computing and sorting.",
+        "remediation_code": "// Option 1: pre-compute and index (best)\ndb.orders.updateMany({}, [{ $set: { profit_margin: { $divide: ['$profit', '$revenue'] } } }]);\ndb.orders.createIndex({ customer_id: 1, profit_margin: -1 });\n\n// Option 2: allowDiskUse (slower)\ndb.orders.aggregate(pipeline, { allowDiskUse: true });\n\n// Option 3: filter before sort\n[\n  { $match: { customer_id: id } },     // narrow first\n  { $project: { /* compute fields */ } },\n  { $sort: { computed_field: -1 } },\n  { $limit: 100 }\n]",
+        "partner_recommendation": "MongoDB Performance Specialist team for aggregation pipeline optimization. PeerIslands offers pipeline tuning as part of their Atlas optimization service.",
+        "tags": [
+            "aggregation",
+            "sort",
+            "memory-limit",
+            "indexing",
+            "performance"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0251",
+        "title": "Multi-tenant noisy neighbor crushed shared cluster",
+        "symptoms": "One tenant's queries causing cluster-wide latency spikes, that tenant runs unbounded analytical queries, other tenants experiencing 5-10x latency degradation, no per-tenant resource isolation",
+        "diagnosis": "ISV running multi-tenant SaaS on a single Atlas cluster with no per-tenant resource governance. One tenant's analytical queries consume all available cache and connections, starving others. This is the noisy-neighbor problem — common in SaaS migrations to MongoDB.",
+        "remediation": "Short term: identify the noisy tenant via $currentOp filtered by tenant_id, throttle their queries via maxTimeMS. Medium term: separate analytical workload from operational using Atlas analytics nodes (read-only secondaries dedicated to analytics). Long term: shard by tenant_id with zone sharding to physically isolate large tenants.",
+        "remediation_code": "// Identify noisy tenants\ndb.adminCommand({ currentOp: 1, $or: [ { active: true } ] }).inprog\n  .filter(op => op.command?.filter?.tenant_id)\n  .reduce((acc, op) => { acc[op.command.filter.tenant_id] = (acc[op.command.filter.tenant_id] || 0) + 1; return acc; }, {});\n\n// Zone sharding for tenant isolation\nsh.addShardToZone('shard-large-tenants', 'PREMIUM');\nsh.updateZoneKeyRange('mydb.events', { tenant_id: 'tenant_xyz' }, { tenant_id: 'tenant_xyz_z' }, 'PREMIUM');",
+        "partner_recommendation": "MongoDB Multi-Tenant Architecture specialist team. For SaaS ISVs, this is a common architectural pivot point — joint engagement with the ISV's product team to redesign the tenancy model.",
+        "tags": [
+            "multi-tenant",
+            "noisy-neighbor",
+            "sharding",
+            "isv",
+            "saas"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0264",
+        "title": "Atlas backup restore took 18 hours due to oplog replay",
+        "symptoms": "Disaster recovery drill: point-in-time restore took 18 hours instead of expected 2 hours, most time spent in oplog replay phase, customer's RPO/RTO requirements no longer met",
+        "diagnosis": "Continuous Cloud Backup with point-in-time recovery requires replaying the oplog from the snapshot to the target time. For high-write-throughput clusters, the oplog replay can take longer than the original real-time period (writes are serialized on restore). The restore time grows with both data size and write rate.",
+        "remediation": "For tighter RTO, use snapshot-based restores (faster but coarser RPO). For very large clusters, evaluate Atlas's queryable backups for partial restores. For strict business continuity requirements, deploy multi-region clusters with read-only analytics nodes that can be promoted.",
+        "remediation_code": "// Use Atlas API to trigger snapshot restore (faster than PITR)\n// POST /groups/{groupId}/clusters/{clusterName}/backup/restoreJobs\n// { snapshotId, targetClusterName, deliveryType: 'automated' }\n\n// For partial restore via queryable backups:\n// Mount the backup snapshot read-only and selectively re-import collections",
+        "partner_recommendation": "AWS DRaaS partners (e.g., Druva, Veeam) for hybrid DR strategies. MongoDB Professional Services for DR architecture review and runbook creation.",
+        "tags": [
+            "backup",
+            "disaster-recovery",
+            "rto",
+            "operations",
+            "professional-services"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0275",
+        "title": "Index intersection chosen over compound index hurt performance",
+        "symptoms": "Query that previously ran in 20ms now takes 400ms, no schema changes, planner chose AND_SORTED stage combining two single-field index scans, compound index exists but is being ignored",
+        "diagnosis": "MongoDB query planner heuristically chose to intersect two single-field indexes rather than use the compound index. Index intersection is sometimes optimal but often slower than a well-designed compound index. The planner's cost model can be misled by stale statistics or unusual data distributions.",
+        "remediation": "Force the planner to use the compound index with hint(). Investigate why the planner deselected the compound index (running validate on the collection, checking index size, reviewing the cached plan). For chronic mis-selection, consider planCacheClear() to reset.",
+        "remediation_code": "// Force the right index with hint\ndb.orders.find({ customer_id: id, status: 'pending' })\n  .hint({ customer_id: 1, status: 1, created_at: -1 });\n\n// Inspect cached plans\ndb.orders.getPlanCache().list();\n\n// Clear plan cache if it's misbehaving\ndb.orders.getPlanCache().clear();",
+        "partner_recommendation": "MongoDB Performance Specialist team — query planner deep-dives are exactly their wheelhouse.",
+        "tags": [
+            "query-planner",
+            "indexing",
+            "plan-cache",
+            "performance",
+            "specialist"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0286",
+        "title": "Time series collection misuse: high cardinality metaField",
+        "symptoms": "Time series collection storage growing 5x expected rate, query performance worse than a regular collection would provide, metaField is a unique transaction_id per document, bucket sizes far below the optimal threshold",
+        "diagnosis": "Time series collections optimize storage by bucketing documents that share a metaField value. When the metaField has unique values per document, no bucketing happens — storage and query benefits evaporate. The metaField should be a low-cardinality dimension (sensor_id, host_name) not a unique identifier.",
+        "remediation": "Migrate to a regular collection (time series semantics don't help here), OR redesign with a proper metaField (e.g., the transaction's source_system or region). Use the transaction_id as a regular indexed field within the document.",
+        "remediation_code": "// Wrong: high-cardinality metaField defeats time series\ndb.createCollection('events', { timeseries: { timeField: 'ts', metaField: 'transaction_id' } });\n\n// Right: low-cardinality metaField for proper bucketing\ndb.createCollection('events', { timeseries: { timeField: 'ts', metaField: 'source_system', granularity: 'minutes' } });\ndb.events.createIndex({ 'metadata.transaction_id': 1 });  // index transaction_id separately",
+        "partner_recommendation": "MongoDB Time Series Specialist team. For IoT and observability use cases, joint pitch with AWS IoT Core or Confluent for streaming ingest patterns.",
+        "tags": [
+            "time-series",
+            "schema-design",
+            "iot",
+            "anti-pattern",
+            "specialist"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0297",
+        "title": "Aggregation pipeline order made $match useless",
+        "symptoms": "Aggregation processing 10M docs to return 50, pipeline starts with $lookup followed by $match on the joined field, $match cannot be pushed down because it filters joined data not source data",
+        "diagnosis": "The query planner can push $match early when matching source-collection fields. When $match filters on $lookup results, the join must complete before filtering, processing the full source collection. The pipeline order is logically correct but operationally backwards.",
+        "remediation": "Restructure the pipeline to filter source data before $lookup. If filtering must be on joined data, use the pipeline form of $lookup with let and pipeline to push the filter into the joined collection's scan.",
+        "remediation_code": "// Inefficient: filters after lookup\n[\n  { $lookup: { from: 'orders', localField: '_id', foreignField: 'user_id', as: 'orders' } },\n  { $match: { 'orders.status': 'completed' } }  // filters AFTER joining 10M docs\n]\n\n// Efficient: filter inside lookup\n[\n  { $lookup: {\n      from: 'orders',\n      let: { uid: '$_id' },\n      pipeline: [\n        { $match: { $expr: { $eq: ['$user_id', '$$uid'] }, status: 'completed' } }\n      ],\n      as: 'completed_orders'\n  }},\n  { $match: { completed_orders: { $ne: [] } } }\n]",
+        "partner_recommendation": "MongoDB University M121 (Aggregation Framework) for the customer's developer team. PeerIslands offers aggregation pipeline audits.",
+        "tags": [
+            "aggregation",
+            "lookup",
+            "pipeline-optimization",
+            "training",
+            "performance"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0308",
+        "title": "Atlas Search index out of sync after schema change",
+        "symptoms": "Search results missing recently inserted documents, Atlas Search index status shows 'STALE', no recent index definition changes, application started writing a new field that isn't in the search mapping",
+        "diagnosis": "Atlas Search indexes are eventually consistent with the operational data. Significant write spikes or schema additions can cause the search index to lag. If the index mapping uses dynamic:false, new fields aren't indexed at all until the mapping is updated.",
+        "remediation": "For new fields: update the search index definition to include the new fields under mappings. For lag without schema changes: monitor index status via Atlas API and consider scaling search nodes for higher throughput.",
+        "remediation_code": "// Update search index to include new fields:\ndb.products.updateSearchIndex(\n  'product_search',\n  {\n    mappings: {\n      dynamic: false,\n      fields: {\n        name: { type: 'string', analyzer: 'lucene.standard' },\n        category: { type: 'string' },\n        new_field: { type: 'string' }  // newly added\n      }\n    }\n  }\n);\n// Wait for status: 'STEADY'",
+        "partner_recommendation": "MongoDB Atlas Search Specialist team. For search-heavy workloads, position dedicated Search Nodes — strong cost/perf story vs. self-managed Elasticsearch.",
+        "tags": [
+            "atlas-search",
+            "search-nodes",
+            "consistency",
+            "elasticsearch-displacement"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0319",
+        "title": "Tier sizing wrong: M30 for 50K ops/sec workload",
+        "symptoms": "Persistent CPU above 80%, ticket queue (read tickets available) frequently dropping to single digits, query latency variable, ops team adds indexes hoping to improve but no relief",
+        "diagnosis": "The cluster is fundamentally under-provisioned for the workload. M30 has 8GB RAM and 2 vCPU; the workload is sustaining 50K ops/sec with a working set near 20GB. No amount of index tuning can compensate for inadequate compute and memory. The ticket queue draining indicates I/O saturation.",
+        "remediation": "Right-size the cluster. Workload needs at minimum M50 (32GB RAM, 8 vCPU) based on working set and concurrency. Use Atlas Performance Advisor + Atlas Charts to validate. Consider tier autoscaling for variable workloads.",
+        "remediation_code": "// Atlas API to scale cluster\n// PATCH /groups/{groupId}/clusters/{clusterName}\n// {\n//   replicationSpecs: [{ regionConfigs: [{\n//     electableSpecs: { instanceSize: 'M50', nodeCount: 3 }\n//   }] }]\n// }\n\n// Or enable autoscaling:\n// providerSettings.autoScaling: { compute: { enabled: true, scaleDownEnabled: true, minInstanceSize: 'M30', maxInstanceSize: 'M60' } }",
+        "partner_recommendation": "Cluster sizing review with MongoDB Solutions Architect. AWS MAP funding can offset upsize costs for AWS-hosted clusters; same for GCP/Azure equivalents. PeerIslands offers a paid cluster sizing audit.",
+        "tags": [
+            "tier-sizing",
+            "capacity-planning",
+            "autoscaling",
+            "aws-funding",
+            "fundamentals"
+        ]
+    },
+    {
+        "incident_id": "INC-2025-0331",
+        "title": "Stream Processing fell behind Kinesis source during traffic spike",
+        "symptoms": "Atlas Stream Processing pipeline lag growing, Kinesis source shard iterator age climbing, downstream Atlas collection missing recent events, stream processor CPU at 100%",
+        "diagnosis": "The stream processor's tier is sized for normal traffic but cannot keep up with a peak-hour spike. Stream processing throughput is bounded by the SPI (Stream Processing Instance) tier and pipeline complexity. Complex stages ($lookup, window aggregations) compound the bottleneck.",
+        "remediation": "Scale up the SPI tier for higher throughput. Optimize the pipeline: filter early ($match before $lookup), reduce window sizes, consider multi-pipeline parallelism with Kinesis enhanced fan-out consumers.",
+        "remediation_code": "// Optimize pipeline order — filter before lookup\nsp.createStreamProcessor('events_pipeline', [\n  { $source: { connectionName: 'kinesis_events', topic: 'events' } },\n  { $match: { event_type: { $in: ['purchase', 'signup'] } } },  // filter early\n  { $lookup: { from: 'users', localField: 'user_id', foreignField: '_id', as: 'user' } },\n  { $merge: { into: { connectionName: 'atlas_cluster', db: 'analytics', coll: 'enriched_events' } } }\n]);\n\n// Scale SPI tier via Atlas API or UI",
+        "partner_recommendation": "AWS Kinesis specialist team for upstream tuning. Confluent for Kafka-based alternatives. Joint reference architecture with AWS as a co-sell motion.",
+        "tags": [
+            "stream-processing",
+            "kinesis",
+            "throughput",
+            "aws",
+            "real-time"
+        ]
+    }
+]
