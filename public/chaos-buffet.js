@@ -10,8 +10,11 @@ document.querySelectorAll('.chaos-btn').forEach(btn => {
         try {
             const res = await fetch(`/api/chaos/${scenario}/trigger`, { method: 'POST' });
             const data = await res.json();
-            statusEl.textContent = `✓ ${scenario} triggered. Wait ~60-120s for symptoms to manifest, then click Diagnose.`;
+            const wait = data.cooldown_seconds || 60;
+            statusEl.textContent = `✓ ${scenario} triggered. Symptoms will manifest in ~${wait}s — Diagnose button will unlock automatically.`;
             console.log('Chaos triggered:', data);
+            // Force immediate cooldown check
+            if (window.refreshCooldown) window.refreshCooldown();
         } catch (err) {
             statusEl.textContent = `✗ Failed: ${err.message}`;
             btn.classList.remove('triggered');
@@ -32,6 +35,7 @@ document.getElementById('reset-all-btn').onclick = async () => {
         statusEl.textContent = '✓ All chaos reset. Cluster recovering.';
         document.querySelectorAll('.chaos-btn.triggered').forEach(b => b.classList.remove('triggered'));
         console.log('Reset all:', data);
+        if (window.refreshCooldown) window.refreshCooldown();
     } catch (err) {
         statusEl.textContent = `✗ Reset failed: ${err.message}`;
     } finally {

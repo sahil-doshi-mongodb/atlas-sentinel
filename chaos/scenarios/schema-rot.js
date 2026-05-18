@@ -5,19 +5,19 @@ export async function trigger() {
     const db = client.db(process.env.MONGODB_DB);
     const coll = db.collection('orders');
 
-    console.log('💥 CHAOS: Bloating 50 documents with massive arrays...');
+    console.log('💥 CHAOS: Bloating 500 documents with massive arrays...');
 
-    // Smaller blast radius (50 docs) but still very visible in stats
-    const targets = await coll.find({}).limit(50).project({ _id: 1 }).toArray();
+    // Bloat 500 docs — 10x more likely to be caught by sample_schema,
+    // and creates a much more visible size jump (~1.5GB extra)
+    const targets = await coll.find({}).limit(500).project({ _id: 1 }).toArray();
     console.log(`   Target docs: ${targets.length}`);
 
-    // Build the huge array once, reuse
+    // Build the huge array once, reuse for all docs
     const huge = Array.from({ length: 30_000 }, (_, i) => ({
         event: `evt_${i}`,
         payload: 'x'.repeat(100),
     }));
 
-    // Parallel bulkWrite — way faster
     const ops = targets.map(t => ({
         updateOne: {
             filter: { _id: t._id },

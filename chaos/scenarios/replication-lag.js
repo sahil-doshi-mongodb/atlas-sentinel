@@ -21,14 +21,20 @@ export async function trigger() {
     fs.writeFileSync(PID_FILE, String(child.pid));
     console.log(`💥 CHAOS: Replication lag worker spawned (PID ${child.pid})`);
     console.log(`   Logs: ${logPath}`);
-    return { triggered: 'replication_lag', pid: child.pid, applied_at: new Date(), note: 'Lag builds over 1-2 min' };
+    return {
+        triggered: 'replication_lag',
+        pid: child.pid,
+        applied_at: new Date(),
+        note: 'Hot-doc hammering. Lag builds over ~2 min.'
+    };
 }
 
 export async function reset() {
     if (!fs.existsSync(PID_FILE)) {
         console.log('ℹ️  No replication lag PID file found');
-        return { reset: 'replication_lag' };
+        return await cleanupData();
     }
+
     const pid = parseInt(fs.readFileSync(PID_FILE, 'utf-8'));
     try {
         process.kill(pid, 'SIGTERM');
@@ -45,5 +51,17 @@ export async function reset() {
         console.log(`ℹ️  Replication lag process ${pid} not running`);
     }
     fs.unlinkSync(PID_FILE);
-    return { reset: 'replication_lag' };
+    return await cleanupData();
+}
+
+async function cleanupData() {
+    const { getAppClient } = await import('../../config/mongo.js');
+    const client = await getAppClient();
+    const db = client.db(process.env.MONGODB_DB);
+    const result = await db.collection('orders').updateMany(
+        { hot_counter: { $exists: true } },
+        { $unset: { hot_counter: '', activity_log: '' } }
+    );
+    console.log(`✅ Reset: cleared hot_counter from ${result.modifiedCount} docs`);
+    return { reset: 'replication_lag', docs_cleaned: result.modifiedCount };
 }

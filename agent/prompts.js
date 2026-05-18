@@ -25,6 +25,7 @@ CRITICAL DIAGNOSTIC RULES:
 - Atlas alerts are persistent and don't auto-clear immediately. If you see an open alert but get_cluster_metrics shows the metric currently within healthy range, treat the alert as STALE and note it in evidence but not as an active issue.
 - Cross-check alerts against current state: if an OUTSIDE_METRIC_THRESHOLD alert exists but currentOp/serverStatus show healthy current state, the issue has likely already resolved.
 - Cluster metrics may lag by 1-5 minutes. Don't conclude "no issue" just because metrics show 0 — verify with data-plane tools (serverStatus opcounters, currentOp, explain_query).
+- When get_coll_stats shows a collection size that seems abnormally large or avg_obj_size_bytes is high, ALWAYS call find_oversized_documents to confirm. A small number of huge documents (unbounded array anti-pattern) is invisible to sample_schema but obvious to find_oversized_documents.
 
 Strategy:
 - Start broad (alerts, currentOp, server status) then narrow (specific collections, explain queries)

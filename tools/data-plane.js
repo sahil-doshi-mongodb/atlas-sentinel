@@ -220,3 +220,43 @@ export async function get_write_activity({ sample_seconds = 2 } = {}) {
 
     return result;
 }
+
+export async function find_oversized_documents({ collection, limit = 10 }) {
+    collection = normalizeCollName(collection);
+    const db = await getDb('agent');
+
+    const results = await db.collection(collection).aggregate([
+        {
+            $project: {
+                _id: 1,
+                doc_size_bytes: { $bsonSize: '$$ROOT' },
+                // Surface a few field-array sizes if present, for context
+                activity_history_size: { $size: { $ifNull: ['$activity_history', []] } },
+                embedding_size: { $size: { $ifNull: ['$embedding', []] } },
+            }
+        },
+        { $sort: { doc_size_bytes: -1 } },
+        { $limit: limit },
+    ]).toArray();
+
+    // Summarize for the agent
+    const sizesKB = results.map(d => Math.round(d.doc_size_bytes / 1024));
+    const maxKB = Math.max(...sizesKB);
+    const avgKB = Math.round(sizesKB.reduce((a, b) => a + b, 0) / sizesKB.length);
+
+    const anomalies = [];
+    if (maxKB > 1024) anomalies.push(`LARGE DOC DETECTED: top doc is ${maxKB}KB (${Math.round(maxKB / 1024)}MB) — approaching 16MB BSON limit`);
+    if (maxKB > avgKB * 100) anomalies.push(`SIZE VARIANCE: top doc is ${Math.round(maxKB / avgKB)}x larger than average — suggests unbounded growth on a subset`);
+
+    return {
+        top_oversized_docs: results.map(d => ({
+            _id: d._id,
+            size_kb: Math.round(d.doc_size_bytes / 1024),
+            activity_history_entries: d.activity_history_size,
+            embedding_dims: d.embedding_size,
+        })),
+        max_size_kb: maxKB,
+        avg_top_n_size_kb: avgKB,
+        anomalies: anomalies.length > 0 ? anomalies : null,
+    };
+}

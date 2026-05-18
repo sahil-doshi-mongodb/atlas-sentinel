@@ -634,3 +634,16 @@ button:disabled {
 .hidden {
     display: none;
 }
+
+button.primary.cooldown {
+    background: var(--amber);
+    color: var(--bg);
+    border-color: var(--amber);
+    cursor: not-allowed;
+    opacity: 0.85;
+}
+
+button.primary.cooldown:hover {
+    background: var(--amber);
+    color: var(--bg);
+}

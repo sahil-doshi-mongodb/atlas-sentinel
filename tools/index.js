@@ -126,6 +126,18 @@ export const TOOLS = {
         },
         fn: dp.get_write_activity,
     },
+    find_oversized_documents: {
+        description: 'Find the largest documents in a collection by BSON size. Use this when get_coll_stats shows unexpectedly large collection size or high avg_obj_size_bytes — confirms whether bloat is concentrated in a few docs (unbounded array anti-pattern) or spread evenly. Surfaces activity_history and embedding array sizes if present.',
+        parameters: {
+            type: 'object',
+            properties: {
+                collection: { type: 'string' },
+                limit: { type: 'number', default: 10 },
+            },
+            required: ['collection'],
+        },
+        fn: dp.find_oversized_documents,
+    },
 };
 
 export function toolSchema() {

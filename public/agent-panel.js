@@ -11,6 +11,43 @@ function clearTrace() {
     reportBody.innerHTML = '';
 }
 
+// === Cooldown management ===
+const DIAGNOSE_DEFAULT_TEXT = '🔍 Diagnose Cluster';
+let cooldownActive = false;
+
+async function refreshCooldown() {
+    try {
+        const res = await fetch('/api/chaos/cooldown-status');
+        const data = await res.json();
+
+        if (data.has_active_cooldowns) {
+            cooldownActive = true;
+            const sec = data.max_seconds_remaining;
+            diagBtn.disabled = true;
+            diagBtn.textContent = `⏳ Wait ${sec}s before diagnosing...`;
+            diagBtn.classList.add('cooldown');
+        } else {
+            if (cooldownActive) {
+                // Just transitioned to unlocked
+                diagBtn.disabled = false;
+                diagBtn.textContent = DIAGNOSE_DEFAULT_TEXT;
+                diagBtn.classList.remove('cooldown');
+                cooldownActive = false;
+            }
+        }
+    } catch (err) {
+        console.error('Cooldown refresh failed:', err);
+    }
+}
+
+// Expose for chaos-buffet.js to trigger immediate refresh after triggering chaos
+window.refreshCooldown = refreshCooldown;
+
+// Poll every 1 second
+setInterval(refreshCooldown, 1000);
+refreshCooldown();
+// === End cooldown management ===
+
 function appendTrace(item) {
     const div = document.createElement('div');
     div.className = `trace-item ${item.type}`;
@@ -124,6 +161,7 @@ function escapeHtml(s) {
 }
 
 diagBtn.onclick = async () => {
+    if (cooldownActive || diagBtn.disabled) return;
     clearTrace();
     diagBtn.disabled = true;
     diagBtn.textContent = '🔍 Diagnosing...';
@@ -165,7 +203,10 @@ diagBtn.onclick = async () => {
         appendTrace({ type: 'tool_error', tool: 'diagnose', error: err.message });
     } finally {
         clearInterval(tickInterval);
-        diagBtn.disabled = false;
-        diagBtn.textContent = '🔍 Diagnose Cluster';
+        // Only re-enable if no chaos is in cooldown
+        if (!cooldownActive) {
+            diagBtn.disabled = false;
+            diagBtn.textContent = DIAGNOSE_DEFAULT_TEXT;
+        }
     }
 };
